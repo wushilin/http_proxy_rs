@@ -74,6 +74,8 @@ async fn main() {
                 if ! authorized {
                     info!("{} rejecting request because of authentication issue", req_id);
                     return Ok(unauthorized_response);
+                } else {
+                    info!("{} request granted", req_id);
                 }
 
                 let target_host = req.uri().authority().map(|auth| auth.to_string());
@@ -92,6 +94,7 @@ async fn main() {
                             let result = proxy(req).await;
                             return result;
                         } else {
+                            info!("{} rejecting connection to {}", req_id, host);
                             return Ok(Response::builder()
                                 .status(StatusCode::FORBIDDEN)
                                 .body(Body::empty())
