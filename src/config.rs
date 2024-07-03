@@ -71,10 +71,12 @@ impl Config {
     pub fn authenticate_user(&self, user:&str, password:&str) -> bool {
         // no users defined. default allow
         if self.users.is_empty() {
+            debug!("no users defined. default allow");
             return true;
         }
         let users = self.get_users();
         let result = users.iter().any(|u| u.username == user && u.password == password);
+        debug!("user:{} authenticated:{} after password scan", user, result);
         return result;
     }
 
