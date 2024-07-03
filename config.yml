@@ -1,0 +1,26 @@
+bind_addr: 0.0.0.0
+bind_port: 3000
+users:
+- username: admin
+  password: admin
+- username: user
+  password: user
+default_allow: true
+allowed:
+- timespec: "* * * * *"
+  regex: a1.*
+- timespec: "* 2 * * *"
+  regex: a2.*
+- timespec: "* 3 * * *"
+  regex: a3.*
+- timespec: "* 4 * * *"
+  regex: a4[.*
+blocked:
+- timespec: "* * * * *"
+  regex: r1.*
+- timespec: "* 2 * * *"
+  regex: r2.*
+- timespec: "* 3 * * *"
+  regex: r3.*
+- timespec: "* 4 * * *"
+  regex: r4.*
