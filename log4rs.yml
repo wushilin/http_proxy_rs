@@ -29,7 +29,7 @@ loggers:
     appenders:
       - default
     additive: true
-  httpproxy::module1:
+  httpproxy::config:
     level: warn
     appenders:
       - default
