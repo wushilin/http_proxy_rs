@@ -1,12 +1,13 @@
 use std::sync::Arc;
-
+use log::{debug, error};
 use anycache::CacheAsync;
 use regex::Regex;
 use serde::{Serialize, Deserialize};
 use lazy_static::lazy_static;
 use crate::crontab;
 
-use crate::crontab::Crontab; // Add this line to import the Serialize and Deserialize traits
+use crate::crontab::Crontab;
+use crate::request_id::RequestId; // Add this line to import the Serialize and Deserialize traits
 
 
 lazy_static! {
@@ -76,8 +77,8 @@ impl Config {
         return result;
     }
 
-    async fn match_host_against_rules(host:&str, rules:&Vec<Rule>) -> bool {
-        let now = chrono::Utc::now();
+    async fn match_host_against_rules(req_id:&RequestId, host:&str, rules:&Vec<Rule>) -> bool {
+        let now = chrono::Local::now();
 
         for rule in rules {
             let host_regex = string_to_regex(&rule.regex).await;
@@ -87,42 +88,44 @@ impl Config {
             match crontab.as_ref() {
                 Ok(cron) => {
                     if cron.is_match_now() {
-                        println!("{} vs {} matched", now, rule.timespec);
+                        debug!("{} {} vs {} matched", req_id, now, rule.timespec);
                         time_matched = true;
                     } else {
-                        println!("{} vs {} not matched", now, rule.timespec);
+                        debug!("{} {} vs {} not matched", req_id, now, rule.timespec);
+                        continue;
                     }
                 },
                 Err(cause) => {
-                    println!("Invalid crontab: {}, cause {:?}", rule.timespec, cause);
+                    error!("{} invalid crontab: {}, cause {:?}", req_id, rule.timespec, cause);
                 }
             }
             match host_regex.as_ref() {
                 Ok(re) => {
                     let match_result = re.is_match(host);
                     if match_result {
-                        println!("{} vs {} matched", host, rule.regex);
+                        debug!("{} {} vs {} matched", req_id, host, rule.regex);
                         regex_matched = true;
                     } else {
-                        println!("{} vs {} not matched", host, rule.regex);
+                        debug!("{} {} vs {} not matched", req_id, host, rule.regex);
+                        continue;
                     }
                 },
                 Err(cause) => {
-                    println!("Invalid regex: {}, cause {}", rule.regex, cause);
+                    error!("{} invalid regex: {}, cause {}", req_id, rule.regex, cause);
                 },
             }
             if time_matched && regex_matched {
-                println!("{} matched", host);
+                debug!("{} {} matched", req_id, host);
                 return true;
             }
         }
         return false;
     }
-    pub async fn check_access(&self, host: &str) -> bool {
+    pub async fn check_access(&self, req_id:&RequestId, host: &str) -> bool {
         let default_allow = self.get_default_allow();
         if default_allow {
             let rules = &self.blocked;
-            let rejected = Self::match_host_against_rules(host, rules).await;
+            let rejected = Self::match_host_against_rules(req_id, host, rules).await;
             if rejected {
                 return false;
             } else {
@@ -130,7 +133,7 @@ impl Config {
             }
         } else {
             let rules = &self.allowed;
-            let allowed = Self::match_host_against_rules(host, rules).await;
+            let allowed = Self::match_host_against_rules(req_id, host, rules).await;
             if allowed {
                 return true;
             } else {

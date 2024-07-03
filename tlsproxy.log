@@ -1,0 +1,18 @@
+2024-07-03 21:37:52.497 +08:00 httpproxy INFO  src/main.rs:112 - listening on 0.0.0.0:3000
+2024-07-03 21:37:56.834 +08:00 httpproxy INFO  src/main.rs:178 - 3Y8S6HkLqAZxyuJNmWD5pT(0) authenticating 2user
+2024-07-03 21:37:56.835 +08:00 httpproxy INFO  src/main.rs:74 - 3Y8S6HkLqAZxyuJNmWD5pT(0) rejecting request because of authentication issue
+2024-07-03 21:38:03.650 +08:00 httpproxy INFO  src/main.rs:178 - vgjnokfM1MxtLAUH7PEJxQ(1) authenticating user
+2024-07-03 21:38:03.746 +08:00 httpproxy INFO  src/main.rs:90 - vgjnokfM1MxtLAUH7PEJxQ(1) allowing connection to www.google.com:443
+2024-07-03 21:38:03.842 +08:00 httpproxy INFO  src/main.rs:217 - vgjnokfM1MxtLAUH7PEJxQ(1) tunnel start
+2024-07-03 21:38:03.945 +08:00 httpproxy INFO  src/main.rs:221 - vgjnokfM1MxtLAUH7PEJxQ(1) ended. up 630 bytes, down 26900 bytes, time 103.362625ms
+2024-07-03 21:47:25.638 +08:00 httpproxy INFO  src/main.rs:113 - listening on 0.0.0.0:3000
+2024-07-03 21:47:30.566 +08:00 httpproxy INFO  src/main.rs:179 - 3XcY5gXbcGukTJ74u6xFNv(0) authenticating user
+2024-07-03 21:47:30.629 +08:00 httpproxy INFO  src/main.rs:91 - 3XcY5gXbcGukTJ74u6xFNv(0) allowing connection to www.google.com:443
+2024-07-03 21:47:30.690 +08:00 httpproxy INFO  src/main.rs:218 - 3XcY5gXbcGukTJ74u6xFNv(0) tunnel start
+2024-07-03 21:47:30.790 +08:00 httpproxy INFO  src/main.rs:223 - 3XcY5gXbcGukTJ74u6xFNv(0) ended. up 630 bytes, down 26311 bytes, time 99.518167ms
+2024-07-03 21:47:30.790 +08:00 httpproxy INFO  src/main.rs:225 - 3XcY5gXbcGukTJ74u6xFNv(0) stats Stats { active_connections: 1, uploaded: 0, downloaded: 0, total_connections: 1 }
+2024-07-03 21:47:44.350 +08:00 httpproxy INFO  src/main.rs:179 - uf2oMqXZj5z2Urw3c4EATs(1) authenticating user
+2024-07-03 21:47:44.350 +08:00 httpproxy INFO  src/main.rs:91 - uf2oMqXZj5z2Urw3c4EATs(1) allowing connection to www.google.com:443
+2024-07-03 21:47:44.361 +08:00 httpproxy INFO  src/main.rs:218 - uf2oMqXZj5z2Urw3c4EATs(1) tunnel start
+2024-07-03 21:47:44.448 +08:00 httpproxy INFO  src/main.rs:223 - uf2oMqXZj5z2Urw3c4EATs(1) ended. up 630 bytes, down 26324 bytes, time 87.502ms
+2024-07-03 21:47:44.448 +08:00 httpproxy INFO  src/main.rs:225 - uf2oMqXZj5z2Urw3c4EATs(1) stats Stats { active_connections: 1, uploaded: 630, downloaded: 26311, total_connections: 2 }

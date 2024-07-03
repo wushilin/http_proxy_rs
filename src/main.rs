@@ -14,57 +14,57 @@
 
 pub mod crontab;
 pub mod config;
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+pub mod request_id;
+pub mod stats;
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use log::{debug, error, info, warn};
 use axum::{
     body::Body,
     extract::Request,
-    http::{HeaderValue, Method, StatusCode},
+    http::{Method, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Router,
 };
 
-use hyper::{body::Incoming, header::{AUTHORIZATION, PROXY_AUTHORIZATION, WWW_AUTHENTICATE}};
+use hyper::{body::Incoming, header::{PROXY_AUTHORIZATION, WWW_AUTHENTICATE}};
 use hyper::server::conn::http1;
 use hyper::upgrade::Upgraded;
-use std::{net::SocketAddr, process::exit, sync::Arc};
-use tokio::net::{TcpListener, TcpStream};
+use request_id::RequestId;
+use std::{process::exit, sync::Arc};
+use tokio::{net::{TcpListener, TcpStream}, time::Instant};
 use tower::Service;
 use tower::ServiceExt;
 
 use hyper_util::rt::TokioIo;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 
 #[tokio::main]
 async fn main() {
+    log4rs::init_file("log4rs.yml", Default::default()).unwrap();
+
     let config = config::Config::from_config_file("config.yml").unwrap();
     let config = Arc::new(config);
     let config_clone = Arc::clone(&config);
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "http_proxy=trace,tower_http=debug".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
 
     let router_svc = Router::new().route("/", get(|| async { "This is not a web server, it is a proxy server" }));
 
     let tower_service = tower::service_fn(move |req: Request<_>| {
+        let mut req = req.map(Body::new);
+        let req_id = RequestId::new();
+        req.extensions_mut().insert(req_id);
         let router_svc = router_svc.clone();
-        let req = req.map(Body::new);
+
         let config = Arc::clone(&config);
         let config_clone_2 = Arc::clone(&config);
         async move {
-
+            let req_id = req.extensions().get::<RequestId>().unwrap().clone();
             if req.method() == Method::CONNECT {
                 req.headers().iter().for_each(|(k, v)| {
-                    println!("{}: {}", k.as_str(), v.to_str().unwrap());
-                    tracing::debug!("{}: {}", k.as_str(), v.to_str().unwrap());
+                    debug!("{} header {} => {}", req_id, k.as_str(), v.to_str().unwrap());
                 });
-                let authorized = check_authorization(config, req.headers().get(PROXY_AUTHORIZATION));
+                let authorized = check_authorization(&req, config);
                 let unauthorized_response = Response::builder()
                     .status(StatusCode::UNAUTHORIZED)
                     .header(WWW_AUTHENTICATE, "Basic realm=\"HTTP Proxy\"")
@@ -72,22 +72,25 @@ async fn main() {
                     .unwrap();
     
                 if ! authorized {
+                    info!("{} rejecting request because of authentication issue", req_id);
                     return Ok(unauthorized_response);
                 }
 
                 let target_host = req.uri().authority().map(|auth| auth.to_string());
                 match target_host {
                     None => {
-                        println!("Bad request. no host to connect to...");
+                        error!("{} bad request. no host to connect to...", req_id);
                         return Ok(Response::builder()
                             .status(StatusCode::BAD_REQUEST)
                             .body(Body::empty())
                             .unwrap());
                     },
                     Some(host) => {
-                        let access = config_clone_2.check_access(&host).await;
+                        let access = config_clone_2.check_access(&req_id, &host).await;
                         if access {
-                            proxy(req).await
+                            info!("{} allowing connection to {}", req_id, host);
+                            let result = proxy(req).await;
+                            return result;
                         } else {
                             return Ok(Response::builder()
                                 .status(StatusCode::FORBIDDEN)
@@ -107,104 +110,98 @@ async fn main() {
     });
 
     let addr = format!("{}:{}", config_clone.get_bind_address(), config_clone.get_bind_port());
-    tracing::debug!("listening on {}", addr);
+    info!("listening on {}", addr);
 
-    let listener = TcpListener::bind(addr).await.unwrap();
-    loop {
-        let (stream, _) = listener.accept().await.unwrap();
-        let io = TokioIo::new(stream);
-        let hyper_service = hyper_service.clone();
-        tokio::task::spawn(async move {
-            if let Err(err) = http1::Builder::new()
-                .preserve_header_case(true)
-                .title_case_headers(true)
-                .serve_connection(io, hyper_service)
-                .with_upgrades()
-                .await
-            {
-                println!("Failed to serve connection: {:?}", err);
+    let listener_result = TcpListener::bind(&addr).await;
+    match listener_result {
+        Ok(listener) => {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let io = TokioIo::new(stream);
+                let hyper_service = hyper_service.clone();
+                tokio::task::spawn(async move {
+                    if let Err(err) = http1::Builder::new()
+                        .preserve_header_case(true)
+                        .title_case_headers(true)
+                        .serve_connection(io, hyper_service)
+                        .with_upgrades()
+                        .await
+                    {
+                        error!("Failed to serve connection: {:?}", err);
+                    }
+                });
             }
-        });
+        },
+        Err(e) => {
+            error!("Failed to bind to address {}: {}", addr, e);
+            exit(1);
+        }
     }
 }
 
-fn check_authorization(cfg:Arc<config::Config>, authorization: Option<&HeaderValue>) -> bool {
-    let default_user = "anonymous";
-    let default_password = "anonymous";
+fn decode_user_password(req:&Request) -> Result<(String, String), Box<dyn std::error::Error>>{
+    let authorization = req.headers().get(PROXY_AUTHORIZATION);
     match authorization {
         None => {
-            return cfg.authenticate_user(default_user, default_password);
-        }, 
+            return Err("no authorization header found".into());
+        },
         Some(value) => {
-            let str_value = value.to_str();
-            match str_value {
-                Ok(value) => {
-                    let parts: Vec<&str> = value.split_whitespace().collect();
-                    if parts.len() != 2 {
-                        return cfg.authenticate_user(default_user, default_password);;
-                    }
-                    let decoded = STANDARD.decode(parts[1]);
-                    match decoded {
-                        Ok(decoded) => {
-                            let decoded_str = String::from_utf8(decoded);
-                            match decoded_str {
-                                Ok(decoded_str) => {
-                                    let index = decoded_str.find(":");
-                                    match index {
-                                        None => {
-                                            println!("Invalid user:password combo: {}", decoded_str);
-                                            return cfg.authenticate_user(default_user, default_password);
-                                        },
-                                        Some(index) => {
-                                            let username = &decoded_str[..index];
-                                            let password = &decoded_str[index+1..];
-
-                                            let result = cfg.authenticate_user(username, password);
-                                            println!("User: {username} result {result}");
-                                            return result;
-                                        }
-                                    }
-                                },
-                                Err(cause) => {
-                                    println!("Failed to get as string after base 64: {} -> {:?}", parts[1], cause);
-                                    return cfg.authenticate_user(default_user, default_password);
-                                }
-                            }
-                        },
-                        Err(cause) => {
-                            println!("Failed to decode base64: {} -> {:?}", parts[1], cause);
-                            return cfg.authenticate_user(default_user, default_password);
-                        }
-                    }
+            let input = value.to_str()?;
+            let tokens:Vec<&str> = input.split_ascii_whitespace().collect();
+            if tokens.len() != 2 {
+                return Err(format!("invalid authorization header: {}", input).into());
+            }
+            let input = tokens[1];
+            let decoded = STANDARD.decode(input.as_bytes())?;
+            let decoded_str = String::from_utf8(decoded)?;
+            let index = decoded_str.find(":");
+            match index {
+                None => {
+                    return Err(format!("invalid user:password combo - no : found! {}", decoded_str).into());
                 },
-                Err(cause) => {
-                    println!("Failed to get header value as string:  {:?}", cause);
-                    return cfg.authenticate_user(default_user, default_password);
+                Some(index) => {
+                    let username = &decoded_str[..index];
+                    let password = &decoded_str[index+1..];
+                    return Ok((username.to_string(), password.to_string()));
                 }
-            
             }
         }
     }
-    true
+}
+
+fn check_authorization(req:&Request, cfg:Arc<config::Config>) -> bool {
+    let default_user = "anonymous";
+    let default_password = "anonymous";
+    let decoded = decode_user_password(req);
+    let req_id = req.extensions().get::<RequestId>().unwrap();
+    match decoded {
+        Ok((username, password)) => {
+            info!("{} authenticating {}", req_id, username);
+            return cfg.authenticate_user(&username, &password);
+        },
+        Err(cause) => {
+            error!("{} no authorization header found. using default user: {}", req_id, cause);
+            return cfg.authenticate_user(default_user, default_password);
+        }
+    }
 }
 async fn proxy(req: Request) -> Result<Response, hyper::Error> {
-    tracing::trace!(?req);
-
+    let req_id = req.extensions().get::<RequestId>().unwrap().clone();
     if let Some(host_addr) = req.uri().authority().map(|auth| auth.to_string()) {
         tokio::task::spawn(async move {
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {
-                    if let Err(e) = tunnel(upgraded, host_addr).await {
-                        tracing::warn!("server io error: {}", e);
+                    if let Err(e) = tunnel(req_id.clone(), upgraded, host_addr).await {
+                        warn!("{} server io error: {}", req_id, e);
                     };
                 }
-                Err(e) => tracing::warn!("upgrade error: {}", e),
+                Err(e) => warn!("{} upgrade error: {}", req_id, e),
             }
         });
 
         Ok(Response::new(Body::empty()))
     } else {
-        tracing::warn!("CONNECT host is not socket addr: {:?}", req.uri());
+        warn!("CONNECT host is not socket addr: {:?}", req.uri());
         Ok((
             StatusCode::BAD_REQUEST,
             "CONNECT must be to a socket address",
@@ -213,19 +210,21 @@ async fn proxy(req: Request) -> Result<Response, hyper::Error> {
     }
 }
 
-async fn tunnel(upgraded: Upgraded, addr: String) -> std::io::Result<()> {
+async fn tunnel(req_id:RequestId, upgraded: Upgraded, addr: String) -> std::io::Result<()> {
     let mut server = TcpStream::connect(addr).await?;
     let mut upgraded = TokioIo::new(upgraded);
 
+    let start = Instant::now();
+    info!("{req_id} tunnel start");
+    stats::incr_conn();
     let (from_client, from_server) =
         tokio::io::copy_bidirectional(&mut upgraded, &mut server).await?;
-
-    println!("handled 1 conn {from_client} {from_server}");
-    tracing::debug!(
-        "client wrote {} bytes and received {} bytes",
-        from_client,
-        from_server
-    );
-
+    let elapsed = start.elapsed();
+    info!("{req_id} ended. up {from_client} bytes, down {from_server} bytes, time {elapsed:?}");
+    stats::incr_downloaded(from_server as usize);
+    stats::incr_uploaded(from_client as usize);
+    stats::decr_conn();
+    let stat = stats::get_stats();
+    info!("{req_id} stats {stat:?}");
     Ok(())
 }
