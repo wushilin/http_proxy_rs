@@ -4,7 +4,7 @@ appenders:
     kind: console
   default:
     kind: rolling_file
-    path: "tlsproxy.log"
+    path: "httpproxy.log"
     append: true
     encoder:
       pattern: "{d(%Y-%m-%d %H:%M:%S%.3f %Z)} {M} {({l}):5.5} {f}:{L} - {m}{n}"
@@ -15,7 +15,7 @@ appenders:
         limit: 10 mb
       roller:
         kind: fixed_window
-        pattern: "tlsproxy.{}.log.gz"
+        pattern: "httpproxy.{}.log.gz"
         count: 20
         base: 1
 root:
@@ -26,6 +26,11 @@ root:
 loggers:
   httpproxy:
     level: info
+    appenders:
+      - default
+    additive: true
+  httpproxy::module1:
+    level: warn
     appenders:
       - default
     additive: true
