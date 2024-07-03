@@ -1,8 +1,9 @@
 use std::sync::Arc;
-use log::{debug, error};
+use chrono::{DateTime, Local};
+use log::{debug, error, info};
 use anycache::CacheAsync;
 use regex::Regex;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use lazy_static::lazy_static;
 use crate::crontab;
 
@@ -77,45 +78,53 @@ impl Config {
         return result;
     }
 
+    async fn match_host_against_rule(req_id:&RequestId, host:&str, rule:&Rule, now: &DateTime<Local>) -> bool {
+        let host_regex = string_to_regex(&rule.regex).await;
+        let crontab = string_to_crontab(&rule.timespec).await;
+        let mut time_matched = false;
+        let mut regex_matched = false;
+        match crontab.as_ref() {
+            Ok(cron) => {
+                if cron.is_match_now() {
+                    info!("{} {} vs {} matched", req_id, now, rule.timespec);
+                    time_matched = true;
+                } else {
+                    info!("{} {} vs {} not matched", req_id, now, rule.timespec);
+                }
+            },
+            Err(cause) => {
+                error!("{} invalid crontab: {}, cause {:?}", req_id, rule.timespec, cause);
+            }
+        }
+        match host_regex.as_ref() {
+            Ok(re) => {
+                let match_result = re.is_match(host);
+                if match_result {
+                    info!("{} {} vs {} matched", req_id, host, rule.regex);
+                    regex_matched = true;
+                } else {
+                    info!("{} {} vs {} not matched", req_id, host, rule.regex);
+                }
+            },
+            Err(cause) => {
+                error!("{} invalid regex: {}, cause {}", req_id, rule.regex, cause);
+            },
+        }
+        if time_matched && regex_matched {
+            debug!("{} {} matched", req_id, host);
+            return true;
+        } else {
+            debug!("{} {} not matched", req_id, host);
+            return false;
+        }
+    }
+
     async fn match_host_against_rules(req_id:&RequestId, host:&str, rules:&Vec<Rule>) -> bool {
-        let now = chrono::Local::now();
+        let now: chrono::DateTime<chrono::Local> = chrono::Local::now();
 
         for rule in rules {
-            let host_regex = string_to_regex(&rule.regex).await;
-            let crontab = string_to_crontab(&rule.timespec).await;
-            let mut time_matched = false;
-            let mut regex_matched = false;
-            match crontab.as_ref() {
-                Ok(cron) => {
-                    if cron.is_match_now() {
-                        debug!("{} {} vs {} matched", req_id, now, rule.timespec);
-                        time_matched = true;
-                    } else {
-                        debug!("{} {} vs {} not matched", req_id, now, rule.timespec);
-                        continue;
-                    }
-                },
-                Err(cause) => {
-                    error!("{} invalid crontab: {}, cause {:?}", req_id, rule.timespec, cause);
-                }
-            }
-            match host_regex.as_ref() {
-                Ok(re) => {
-                    let match_result = re.is_match(host);
-                    if match_result {
-                        debug!("{} {} vs {} matched", req_id, host, rule.regex);
-                        regex_matched = true;
-                    } else {
-                        debug!("{} {} vs {} not matched", req_id, host, rule.regex);
-                        continue;
-                    }
-                },
-                Err(cause) => {
-                    error!("{} invalid regex: {}, cause {}", req_id, rule.regex, cause);
-                },
-            }
-            if time_matched && regex_matched {
-                debug!("{} {} matched", req_id, host);
+            let result = Self::match_host_against_rule(req_id, host, rule, &now).await;
+            if result {
                 return true;
             }
         }
