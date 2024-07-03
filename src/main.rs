@@ -75,7 +75,7 @@ async fn main() {
                     info!("{} rejecting request because of authentication issue", req_id);
                     return Ok(unauthorized_response);
                 } else {
-                    info!("{} request granted", req_id);
+                    info!("{} user auth OK", req_id);
                 }
 
                 let target_host = req.uri().authority().map(|auth| auth.to_string());
@@ -130,13 +130,13 @@ async fn main() {
                         .with_upgrades()
                         .await
                     {
-                        error!("Failed to serve connection: {:?}", err);
+                        error!("failed to serve connection: {:?}", err);
                     }
                 });
             }
         },
         Err(e) => {
-            error!("Failed to bind to address {}: {}", addr, e);
+            error!("failed to bind to address {}: {}", addr, e);
             exit(1);
         }
     }
@@ -152,7 +152,7 @@ fn decode_user_password(req:&Request) -> Result<(String, String), Box<dyn std::e
             let input = value.to_str()?;
             let tokens:Vec<&str> = input.split_ascii_whitespace().collect();
             if tokens.len() != 2 {
-                return Err(format!("invalid authorization header: {}", input).into());
+                return Err(format!("invalid authorization header: `{}`. must be space separated, 2 tokens exactly", input).into());
             }
             let input = tokens[1];
             let decoded = STANDARD.decode(input.as_bytes())?;
@@ -160,7 +160,7 @@ fn decode_user_password(req:&Request) -> Result<(String, String), Box<dyn std::e
             let index = decoded_str.find(":");
             match index {
                 None => {
-                    return Err(format!("invalid user:password combo - no : found! {}", decoded_str).into());
+                    return Err(format!("invalid user:password combo - no `:` found in `{}`", decoded_str).into());
                 },
                 Some(index) => {
                     let username = &decoded_str[..index];
@@ -179,11 +179,12 @@ fn check_authorization(req:&Request, cfg:Arc<config::Config>) -> bool {
     let req_id = req.extensions().get::<RequestId>().unwrap();
     match decoded {
         Ok((username, password)) => {
-            info!("{} authenticating {}", req_id, username);
+            info!("{} authenticating User:{}", req_id, username);
             return cfg.authenticate_user(&username, &password);
         },
         Err(cause) => {
-            error!("{} no authorization header found. using default user: {}", req_id, cause);
+            error!("{} no authorization header found({}). using default User:{} and default password {}", 
+                req_id, cause, default_user, default_password);
             return cfg.authenticate_user(default_user, default_password);
         }
     }
