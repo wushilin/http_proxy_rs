@@ -13,8 +13,8 @@ allowed:
   regex: a2.*
 - timespec: "* 3 * * *"
   regex: a3.*
-- timespec: "* 21 * * *"
-  regex: google
+- timespec: "* 19 * * *"
+  regex: yahoo
 blocked:
 - timespec: "* * * * *"
   regex: r1.*

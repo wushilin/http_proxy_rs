@@ -52,6 +52,11 @@ impl Config {
         return Ok(config);
     }
 
+    pub fn from_bytes(source: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        let config: Config = serde_yaml::from_slice(source)?;
+        return Ok(config);
+    }
+
     pub fn get_bind_address(&self) -> String {
         self.bind_addr.clone().unwrap_or("0.0.0.0".into())
     }
