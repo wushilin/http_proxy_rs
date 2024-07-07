@@ -3,8 +3,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use anycache::{FileParseError, FromWatchedFile};
 use bytes::Bytes;
-
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use config::Config;
+use http::header::{PROXY_AUTHORIZATION, WWW_AUTHENTICATE};
+use http::StatusCode;
 use http_body_util::BodyExt;
 use http_body_util::{combinators::BoxBody, Empty, Full};
 use hyper::client::conn::http1::Builder;
@@ -53,10 +55,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Duration::from_secs(5),
     ));
 
-    let xx = config.get().unwrap();
+    let cfg = config.get().unwrap();
 
-    info!("Config is {:?}", xx);
-    let bind_addr = format!("{}:{}", xx.get_bind_address(), xx.get_bind_port());
+    let bind_addr = format!("{}:{}", cfg.get_bind_address(), cfg.get_bind_port());
     let listener_result = TcpListener::bind(&bind_addr).await;
     match listener_result {
         Ok(listener) => {
@@ -64,6 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             loop {
                 let accept_result = listener.accept().await;
+                let cfg = config.get().unwrap();
                 match accept_result {
                     Ok((stream, _)) => {
                         let read_count = Arc::new(AtomicUsize::new(0));
@@ -78,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let result = http1::Builder::new()
                                 .preserve_header_case(true)
                                 .title_case_headers(true)
-                                .serve_connection(io, service_fn(|x| proxy(req_id.clone(), x)))
+                                .serve_connection(io, service_fn(|req| proxy(req_id.clone(),Arc::clone(&cfg),  req)))
                                 .with_upgrades()
                                 .await;
                             match result {
@@ -110,10 +112,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn proxy(
     req_id: RequestId,
+    config: Arc<Config>,
     mut req: Request<hyper::body::Incoming>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     req.extensions_mut().insert(req_id.clone());
     info!("{} request begin", req_id);
+    let config_clone = Arc::clone(&config);
+    let authorized = check_authorization(&req, config);
+    
+    let unauthorized_response = Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header(WWW_AUTHENTICATE, "Basic realm=\"HTTP Proxy\"")
+        .body(empty())
+        .unwrap();
+
+    if !authorized {
+        info!(
+            "{} rejecting request because of authentication issue",
+            req_id
+        );
+        return Ok(unauthorized_response);
+    } else {
+        info!("{} user auth OK", req_id);
+    }
+
     if Method::CONNECT == req.method() {
         debug!("{} request is CONNECT", req_id);
         // Received an HTTP request like:
@@ -131,19 +153,33 @@ async fn proxy(
         // `on_upgrade` future.
         if let Some(addr) = host_addr(req.uri()) {
             let req_id_clone = req_id.clone();
-            tokio::task::spawn(async move {
-                match hyper::upgrade::on(req).await {
-                    Ok(upgraded) => {
-                        if let Err(e) = tunnel(req_id_clone.clone(), upgraded, addr).await {
-                            error!("{} server io error: {}", req_id_clone, e);
-                        };
+            let access = config_clone.check_access(&req_id, &addr).await;
+            if access {
+                info!("{} allowing connection to {}", req_id, addr);
+                tokio::task::spawn(async move {
+                    match hyper::upgrade::on(req).await {
+                        Ok(upgraded) => {
+                            if let Err(e) = tunnel(req_id_clone.clone(), upgraded, addr).await {
+                                error!("{} server io error: {}", req_id_clone, e);
+                            } else {
+                                info!("{} upgrade completed", req_id_clone);
+                            }
+                        }
+                        Err(e) => {
+                            error!("{} upgrade error: {}", req_id_clone, e);   
+                        }
                     }
-                    Err(e) => {
-                        error!("{} upgrade error: {}", req_id_clone, e);   
-                    }
-                }
-            });
-            return Ok(Response::new(empty()));
+                });
+
+                // has to return empty response to allow upgrade to complete
+                return Ok(Response::new(empty()));
+            } else {
+                info!("{} rejecting connection to {}", req_id, addr);
+                return Ok(Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .body(empty())
+                    .unwrap());
+            }
         } else {
             let mut resp = Response::new(full("CONNECT must be to a socket address"));
             *resp.status_mut() = http::StatusCode::BAD_REQUEST;
@@ -153,15 +189,25 @@ async fn proxy(
     } else {
         let host_opt = req.uri().host();
         
-        
         if host_opt.is_none() {
-            let mut resp = Response::new(full("no HOST found to connect to"));
+            let mut resp = Response::new(full("This is a proxy, not a web server. no HOST found to connect to"));
             *resp.status_mut() = http::StatusCode::BAD_REQUEST;
             info!("{} request ended no host to connect", req_id);
             return Ok(resp);
         }
         let host = host_opt.unwrap().to_string();
         let port = req.uri().port_u16().unwrap_or(80);
+        let addr = format!("{}:{}", host, port);
+        let access = config_clone.check_access(&req_id, &addr).await;
+        if access {
+            info!("{} allowing connection to {}", req_id, addr);
+        } else {
+            info!("{} rejecting connection to {}", req_id, addr);
+            return Ok(Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .body(empty())
+                .unwrap());
+        }
 
         let stream = TcpStream::connect((host.clone(), port)).await;
         info!("{} connecting to {}:{}", req_id, host, port);
@@ -196,10 +242,10 @@ async fn proxy(
             let result = conn.await;
             match result {
                 Ok(()) => {
-                    info!("{} connection completed.", req_id_clone);
+                    info!("{} handshake result acquired.", req_id_clone);
                 },
                 Err(err) => {
-                    warn!("{} connection failed: {:?}", req_id_clone, err);
+                    warn!("{} handshake result failed: {:?}", req_id_clone, err);
                 }
             }
         });
@@ -247,11 +293,67 @@ async fn tunnel(req_id:RequestId, upgraded: Upgraded, addr: String) -> std::io::
 
     // Print message when done
     info!(
-        "{} client wrote {} bytes and received {} bytes",
+        "{} completed. client wrote {} bytes and received {} bytes",
         req_id,
         from_client, 
         from_server
     );
 
     Ok(())
+}
+
+fn decode_user_password(req: &Request<hyper::body::Incoming>) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let authorization = req.headers().get(PROXY_AUTHORIZATION);
+    match authorization {
+        None => {
+            return Err("no authorization header found".into());
+        }
+        Some(value) => {
+            let input = value.to_str()?;
+            let tokens: Vec<&str> = input.split_ascii_whitespace().collect();
+            if tokens.len() != 2 {
+                return Err(format!(
+                    "invalid authorization header: `{}`. must be space separated, 2 tokens exactly",
+                    input
+                )
+                .into());
+            }
+            let input = tokens[1];
+            let decoded = STANDARD.decode(input.as_bytes())?;
+            let decoded_str = String::from_utf8(decoded)?;
+            let index = decoded_str.find(":");
+            match index {
+                None => {
+                    return Err(format!(
+                        "invalid user:password combo - no `:` found in `{}`",
+                        decoded_str
+                    )
+                    .into());
+                }
+                Some(index) => {
+                    let username = &decoded_str[..index];
+                    let password = &decoded_str[index + 1..];
+                    return Ok((username.to_string(), password.to_string()));
+                }
+            }
+        }
+    }
+}
+
+fn check_authorization(req: &Request<hyper::body::Incoming>, cfg: Arc<config::Config>) -> bool {
+    let default_user = "anonymous";
+    let default_password = "anonymous";
+    let decoded = decode_user_password(req);
+    let req_id = req.extensions().get::<RequestId>().unwrap();
+    match decoded {
+        Ok((username, password)) => {
+            info!("{} authenticating User:{}", req_id, username);
+            return cfg.authenticate_user(&username, &password);
+        }
+        Err(cause) => {
+            error!("{} no authorization header found({}). using default User:{} and default password {}", 
+                req_id, cause, default_user, default_password);
+            return cfg.authenticate_user(default_user, default_password);
+        }
+    }
 }

@@ -42,7 +42,6 @@ T: AsyncRead + AsyncWrite + Unpin
         let filled2 = buf.filled().len();
         let read_count = filled2 - filled1;
         if read_count > 0 {
-            println!("????{}", read_count);
             self.read.fetch_add(read_count, std::sync::atomic::Ordering::SeqCst);
         }
         result

@@ -1,20 +1,20 @@
 bind_addr: 0.0.0.0
 bind_port: 3000
 users:
-- username: admin
-  password: admin
-- username: user
-  password: user
+#- username: admin
+#  password: admin
+#- username: user
+#  password: user
 default_allow: false
 allowed:
 - timespec: "* * * * *"
-  regex: a1.*
+  regex: huasing.*
 - timespec: "* 2 * * *"
   regex: a2.*
 - timespec: "* 3 * * *"
   regex: a3.*
-- timespec: "* 19 * * *"
-  regex: yahoo
+- timespec: "* 8 * * *"
+  regex: google
 blocked:
 - timespec: "* * * * *"
   regex: r1.*
