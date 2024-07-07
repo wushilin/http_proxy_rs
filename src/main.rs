@@ -13,10 +13,9 @@ use hyper::client::conn::http1::Builder;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
-use hyper::{Method, Request, Response};
-use tokio::sync::oneshot::{self, Sender};
-
 use hyper_util::rt::TokioIo;
+use hyper::{Method, Request, Response};
+
 use log::{debug, error, info, warn};
 use metered_io::MeteredIo;
 use request_id::RequestId;
